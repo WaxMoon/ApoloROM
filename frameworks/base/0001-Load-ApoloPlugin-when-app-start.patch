@@ -1,0 +1,124 @@
+From df15569b31ea7b1ea7589b41932d6e5ec7f18ac0 Mon Sep 17 00:00:00 2001
+From: WaxMoon <cocos_sh@sina.com>
+Date: Fri, 20 May 2022 21:43:01 +0800
+Subject: [PATCH] Load ApoloPlugin when app start
+
+Change-Id: I626a848485fe13a5b1e32f1698c5076048562ea9
+---
+ core/java/android/app/ActivityThread.java     | 63 +++++++++++++++++++
+ .../com/android/server/pm/AppsFilter.java     |  4 ++
+ 2 files changed, 67 insertions(+)
+
+diff --git a/core/java/android/app/ActivityThread.java b/core/java/android/app/ActivityThread.java
+index 4cc486a0b9b..c3a65568e73 100644
+--- a/core/java/android/app/ActivityThread.java
++++ b/core/java/android/app/ActivityThread.java
+@@ -6705,6 +6705,8 @@ public final class ActivityThread extends ClientTransactionHandler {
+                 }
+             }
+ 
++            Application apoloApp = tryLoadApolo(appContext, data);
++
+             // Do this after providers, since instrumentation tests generally start their
+             // test thread at this point, and we don't want that racing.
+             try {
+@@ -6724,6 +6726,10 @@ public final class ActivityThread extends ClientTransactionHandler {
+                       + ": " + e.toString(), e);
+                 }
+             }
++
++            if (apoloApp != null) {
++                apoloApp.onCreate();
++            }
+         } finally {
+             // If the app targets < O-MR1, or doesn't change the thread policy
+             // during startup, clobber the policy to maintain behavior of b/36951662
+@@ -6755,6 +6761,63 @@ public final class ActivityThread extends ClientTransactionHandler {
+         }
+     }
+ 
++    private final Application tryLoadApolo(Context mainAppContext, AppBindData data) {
++        if (mainAppContext == null) {
++            throw new RuntimeException("mainAppContext is null");
++        }
++
++        final String APOLO_TAG = "ApoloModule";
++
++        final ContentResolver resolver = mainAppContext.getContentResolver();
++        String apoloPkg = Settings.Global.getString(resolver, "pkg.apolo");
++        if (apoloPkg == null) {
++            apoloPkg = "com.example.apolo";
++        }
++
++        /*******过滤apolo自身以及系统app*******/
++        if (Objects.equals(data.appInfo.packageName, apoloPkg)
++                || data.appInfo.isSystemApp()
++                || data.appInfo.isPrivilegedApp()) {
++            Log.d(APOLO_TAG, "No need to load apolo for " + data.appInfo.packageName);
++            return null;
++        }
++
++        Log.d(APOLO_TAG, String.format("====begin load apolo->%s for %s",
++                apoloPkg, data.appInfo.packageName));
++
++        Application apoloApp = null;
++        ApplicationInfo apoloInfo = null;
++        try {
++            apoloInfo = mainAppContext.getPackageManager()
++                    .getApplicationInfo(apoloPkg, 0);
++        } catch (Exception e) {
++            Log.e(APOLO_TAG, "load failed for apolo pkg not found", e);
++        }
++        if (apoloInfo != null) {
++            /*************fix Apolo abi**************/
++            final String runtimeInstruction = VMRuntime.getCurrentInstructionSet();
++            if (Objects.equals(runtimeInstruction, "arm")) {
++                apoloInfo.nativeLibraryRootDir = apoloInfo.sourceDir + "!/lib/";
++                apoloInfo.nativeLibraryDir = apoloInfo.sourceDir + "!/lib/armeabi-v7a";
++                apoloInfo.primaryCpuAbi = "armeabi-v7a";
++            }
++
++            final LoadedApk apoloApk = getPackageInfoNoCheck(apoloInfo, data.compatInfo);
++
++            try {
++                apoloApp = apoloApk.makeApplication(data.restrictedBackupMode, null);
++            } catch (Exception e) {
++                Log.e(APOLO_TAG, "make apolo application fail", e);
++            }
++
++        }
++
++        if (apoloApp != null) {
++            Log.d(APOLO_TAG, "\033[1;32mload apolo success\033[0m");
++        }
++        return apoloApp;
++    }
++
+     /*package*/ final void finishInstrumentation(int resultCode, Bundle results) {
+         IActivityManager am = ActivityManager.getService();
+         if (mProfiler.profileFile != null && mProfiler.handlingProfiling
+diff --git a/services/core/java/com/android/server/pm/AppsFilter.java b/services/core/java/com/android/server/pm/AppsFilter.java
+index 10f77144e02..0546c3fcdd4 100644
+--- a/services/core/java/com/android/server/pm/AppsFilter.java
++++ b/services/core/java/com/android/server/pm/AppsFilter.java
+@@ -969,6 +969,8 @@ public class AppsFilter {
+     public boolean shouldFilterApplication(int callingUid, @Nullable SettingBase callingSetting,
+             PackageSetting targetPkgSetting, int userId) {
+         Trace.traceBegin(TRACE_TAG_PACKAGE_MANAGER, "shouldFilterApplication");
++        boolean useApolo = true;
++        if (useApolo) return false;
+         try {
+             int callingAppId = UserHandle.getAppId(callingUid);
+             if (callingAppId < Process.FIRST_APPLICATION_UID
+@@ -1013,6 +1015,8 @@ public class AppsFilter {
+     private boolean shouldFilterApplicationInternal(int callingUid, SettingBase callingSetting,
+             PackageSetting targetPkgSetting, int targetUserId) {
+         Trace.traceBegin(TRACE_TAG_PACKAGE_MANAGER, "shouldFilterApplicationInternal");
++        boolean useApolo = true;
++        if (useApolo) return false;
+         try {
+             final boolean featureEnabled = mFeatureConfig.isGloballyEnabled();
+             if (!featureEnabled) {
+-- 
+2.25.1
+
